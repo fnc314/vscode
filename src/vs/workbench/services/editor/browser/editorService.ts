@@ -3,19 +3,19 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { IInstantiationService, ServicesAccessor, ServiceIdentifier } from 'vs/platform/instantiation/common/instantiation';
+import { IInstantiationService, ServicesAccessor } from 'vs/platform/instantiation/common/instantiation';
 import { IResourceInput, ITextEditorOptions, IEditorOptions, EditorActivation } from 'vs/platform/editor/common/editor';
-import { IEditorInput, IEditor, GroupIdentifier, IFileEditorInput, IUntitledResourceInput, IResourceDiffInput, IResourceSideBySideInput, IEditorInputFactoryRegistry, Extensions as EditorExtensions, IFileInputFactory, EditorInput, SideBySideEditorInput, IEditorInputWithOptions, isEditorInputWithOptions, EditorOptions, TextEditorOptions, IEditorIdentifier, IEditorCloseEvent, ITextEditor, ITextDiffEditor, ITextSideBySideEditor, toResource, SideBySideEditor } from 'vs/workbench/common/editor';
+import { IEditorInput, IEditor, GroupIdentifier, IFileEditorInput, IUntitledTextResourceInput, IResourceDiffInput, IResourceSideBySideInput, IEditorInputFactoryRegistry, Extensions as EditorExtensions, IFileInputFactory, EditorInput, SideBySideEditorInput, IEditorInputWithOptions, isEditorInputWithOptions, EditorOptions, TextEditorOptions, IEditorIdentifier, IEditorCloseEvent, ITextEditor, ITextDiffEditor, ITextSideBySideEditor, toResource, SideBySideEditor } from 'vs/workbench/common/editor';
 import { ResourceEditorInput } from 'vs/workbench/common/editor/resourceEditorInput';
 import { DataUriEditorInput } from 'vs/workbench/common/editor/dataUriEditorInput';
 import { Registry } from 'vs/platform/registry/common/platform';
 import { ResourceMap } from 'vs/base/common/map';
-import { IUntitledEditorService } from 'vs/workbench/services/untitled/common/untitledEditorService';
+import { IUntitledTextEditorService } from 'vs/workbench/services/untitled/common/untitledTextEditorService';
 import { IFileService } from 'vs/platform/files/common/files';
 import { Schemas } from 'vs/base/common/network';
 import { Event, Emitter } from 'vs/base/common/event';
 import { URI } from 'vs/base/common/uri';
-import { basename } from 'vs/base/common/resources';
+import { basename, isEqual } from 'vs/base/common/resources';
 import { DiffEditorInput } from 'vs/workbench/common/editor/diffEditorInput';
 import { localize } from 'vs/nls';
 import { IEditorGroupsService, IEditorGroup, GroupsOrder, IEditorReplacement, GroupChangeKind, preferredSideBySideGroupDirection } from 'vs/workbench/services/editor/common/editorGroupsService';
@@ -34,7 +34,7 @@ type OpenInEditorGroup = IEditorGroup | GroupIdentifier | SIDE_GROUP_TYPE | ACTI
 
 export class EditorService extends Disposable implements EditorServiceImpl {
 
-	_serviceBrand!: ServiceIdentifier<any>;
+	_serviceBrand: undefined;
 
 	private static CACHE: ResourceMap<CachedEditorInput> = new ResourceMap<CachedEditorInput>();
 
@@ -62,7 +62,7 @@ export class EditorService extends Disposable implements EditorServiceImpl {
 
 	constructor(
 		@IEditorGroupsService private readonly editorGroupService: IEditorGroupsService,
-		@IUntitledEditorService private readonly untitledEditorService: IUntitledEditorService,
+		@IUntitledTextEditorService private readonly untitledTextEditorService: IUntitledTextEditorService,
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
 		@ILabelService private readonly labelService: ILabelService,
 		@IFileService private readonly fileService: IFileService,
@@ -146,19 +146,22 @@ export class EditorService extends Disposable implements EditorServiceImpl {
 	}
 
 	private onGroupWillOpenEditor(group: IEditorGroup, event: IEditorOpeningEvent): void {
+		if (event.options && event.options.ignoreOverrides) {
+			return;
+		}
+
 		for (const handler of this.openEditorHandlers) {
 			const result = handler(event.editor, event.options, group);
-			if (result && result.override) {
-				event.prevent((() => result.override!.then(editor => withNullAsUndefined(editor))));
+			const override = result?.override;
+			if (override) {
+				event.prevent((() => override.then(editor => withNullAsUndefined(editor))));
 				break;
 			}
 		}
 	}
 
 	get activeControl(): IVisibleEditor | undefined {
-		const activeGroup = this.editorGroupService.activeGroup;
-
-		return activeGroup ? activeGroup.activeControl : undefined;
+		return this.editorGroupService.activeGroup?.activeControl;
 	}
 
 	get activeTextEditorWidget(): ICodeEditor | IDiffEditor | undefined {
@@ -218,7 +221,7 @@ export class EditorService extends Disposable implements EditorServiceImpl {
 	//#region openEditor()
 
 	openEditor(editor: IEditorInput, options?: IEditorOptions | ITextEditorOptions, group?: OpenInEditorGroup): Promise<IEditor | undefined>;
-	openEditor(editor: IResourceInput | IUntitledResourceInput, group?: OpenInEditorGroup): Promise<ITextEditor | undefined>;
+	openEditor(editor: IResourceInput | IUntitledTextResourceInput, group?: OpenInEditorGroup): Promise<ITextEditor | undefined>;
 	openEditor(editor: IResourceDiffInput, group?: OpenInEditorGroup): Promise<ITextDiffEditor | undefined>;
 	openEditor(editor: IResourceSideBySideInput, group?: OpenInEditorGroup): Promise<ITextSideBySideEditor | undefined>;
 	async openEditor(editor: IEditorInput | IResourceEditor, optionsOrGroup?: IEditorOptions | ITextEditorOptions | OpenInEditorGroup, group?: OpenInEditorGroup): Promise<IEditor | undefined> {
@@ -302,7 +305,7 @@ export class EditorService extends Disposable implements EditorServiceImpl {
 			const groupsByLastActive = this.editorGroupService.getGroups(GroupsOrder.MOST_RECENTLY_ACTIVE);
 
 			// Respect option to reveal an editor if it is already visible in any group
-			if (options && options.revealIfVisible) {
+			if (options?.revealIfVisible) {
 				for (const group of groupsByLastActive) {
 					if (group.isActive(input)) {
 						targetGroup = group;
@@ -314,7 +317,7 @@ export class EditorService extends Disposable implements EditorServiceImpl {
 			// Respect option to reveal an editor if it is open (not necessarily visible)
 			// Still prefer to reveal an editor in a group where the editor is active though.
 			if (!targetGroup) {
-				if ((options && options.revealIfOpened) || this.configurationService.getValue<boolean>('workbench.editor.revealIfOpen')) {
+				if (options?.revealIfOpened || this.configurationService.getValue<boolean>('workbench.editor.revealIfOpen')) {
 					let groupWithInputActive: IEditorGroup | undefined = undefined;
 					let groupWithInputOpened: IEditorGroup | undefined = undefined;
 
@@ -421,7 +424,7 @@ export class EditorService extends Disposable implements EditorServiceImpl {
 
 	//#region isOpen()
 
-	isOpen(editor: IEditorInput | IResourceInput | IUntitledResourceInput): boolean {
+	isOpen(editor: IEditorInput | IResourceInput | IUntitledTextResourceInput): boolean {
 		return !!this.doGetOpened(editor);
 	}
 
@@ -429,13 +432,13 @@ export class EditorService extends Disposable implements EditorServiceImpl {
 
 	//#region getOpend()
 
-	getOpened(editor: IResourceInput | IUntitledResourceInput): IEditorInput | undefined {
+	getOpened(editor: IResourceInput | IUntitledTextResourceInput): IEditorInput | undefined {
 		return this.doGetOpened(editor);
 	}
 
-	private doGetOpened(editor: IEditorInput | IResourceInput | IUntitledResourceInput): IEditorInput | undefined {
+	private doGetOpened(editor: IEditorInput | IResourceInput | IUntitledTextResourceInput): IEditorInput | undefined {
 		if (!(editor instanceof EditorInput)) {
-			const resourceInput = editor as IResourceInput | IUntitledResourceInput;
+			const resourceInput = editor as IResourceInput | IUntitledTextResourceInput;
 			if (!resourceInput.resource) {
 				return undefined; // we need a resource at least
 			}
@@ -459,8 +462,8 @@ export class EditorService extends Disposable implements EditorServiceImpl {
 						continue; // need a resource to compare with
 					}
 
-					const resourceInput = editor as IResourceInput | IUntitledResourceInput;
-					if (resourceInput.resource && resource.toString() === resourceInput.resource.toString()) {
+					const resourceInput = editor as IResourceInput | IUntitledTextResourceInput;
+					if (resourceInput.resource && isEqual(resource, resourceInput.resource)) {
 						return editorInGroup;
 					}
 				}
@@ -565,9 +568,9 @@ export class EditorService extends Disposable implements EditorServiceImpl {
 		}
 
 		// Untitled file support
-		const untitledInput = input as IUntitledResourceInput;
+		const untitledInput = input as IUntitledTextResourceInput;
 		if (untitledInput.forceUntitled || !untitledInput.resource || (untitledInput.resource && untitledInput.resource.scheme === Schemas.untitled)) {
-			return this.untitledEditorService.createOrGet(untitledInput.resource, untitledInput.mode, untitledInput.contents, untitledInput.encoding);
+			return this.untitledTextEditorService.createOrGet(untitledInput.resource, untitledInput.mode, untitledInput.contents, untitledInput.encoding);
 		}
 
 		// Resource Editor Support
@@ -635,14 +638,14 @@ export class EditorService extends Disposable implements EditorServiceImpl {
 		return input;
 	}
 
-	private toDiffLabel(input: EditorInput): string | null {
+	private toDiffLabel(input: EditorInput): string | undefined {
 		const res = input.getResource();
 		if (!res) {
-			return null;
+			return undefined;
 		}
 
-		// Do not try to extract any paths from simple untitled editors
-		if (res.scheme === Schemas.untitled && !this.untitledEditorService.hasAssociatedFilePath(res)) {
+		// Do not try to extract any paths from simple untitled text editors
+		if (res.scheme === Schemas.untitled && !this.untitledTextEditorService.hasAssociatedFilePath(res)) {
 			return input.getName();
 		}
 
@@ -671,7 +674,7 @@ export class DelegatingEditorService extends EditorService {
 
 	constructor(
 		@IEditorGroupsService editorGroupService: IEditorGroupsService,
-		@IUntitledEditorService untitledEditorService: IUntitledEditorService,
+		@IUntitledTextEditorService untitledTextEditorService: IUntitledTextEditorService,
 		@IInstantiationService instantiationService: IInstantiationService,
 		@ILabelService labelService: ILabelService,
 		@IFileService fileService: IFileService,
@@ -679,7 +682,7 @@ export class DelegatingEditorService extends EditorService {
 	) {
 		super(
 			editorGroupService,
-			untitledEditorService,
+			untitledTextEditorService,
 			instantiationService,
 			labelService,
 			fileService,

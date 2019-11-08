@@ -6,7 +6,6 @@
 import { createDecorator } from 'vs/platform/instantiation/common/instantiation';
 import { Emitter, Event } from 'vs/base/common/event';
 import { IStorageService, StorageScope } from 'vs/platform/storage/common/storage';
-import { IEnvironmentService } from 'vs/platform/environment/common/environment';
 import { ITelemetryService, lastSessionDateStorageKey } from 'vs/platform/telemetry/common/telemetry';
 import { ILifecycleService, LifecyclePhase } from 'vs/platform/lifecycle/common/lifecycle';
 import { IConfigurationService } from 'vs/platform/configuration/common/configuration';
@@ -19,7 +18,7 @@ import { ITextFileService, StateChange } from 'vs/workbench/services/textfile/co
 import { CancellationToken } from 'vs/base/common/cancellation';
 import { distinct } from 'vs/base/common/arrays';
 import { ExtensionType } from 'vs/platform/extensions/common/extensions';
-import { IProductService } from 'vs/platform/product/common/product';
+import { IProductService } from 'vs/platform/product/common/productService';
 import { IWorkspaceStatsService } from 'vs/workbench/contrib/stats/common/workspaceStats';
 
 export const enum ExperimentState {
@@ -63,7 +62,7 @@ export interface IExperiment {
 }
 
 export interface IExperimentService {
-	_serviceBrand: any;
+	_serviceBrand: undefined;
 	getExperimentById(id: string): Promise<IExperiment>;
 	getExperimentsByType(type: ExperimentActionType): Promise<IExperiment[]>;
 	getCuratedExtensionsList(curatedExtensionsKey: string): Promise<string[]>;
@@ -108,7 +107,7 @@ interface IRawExperiment {
 }
 
 export class ExperimentService extends Disposable implements IExperimentService {
-	_serviceBrand: any;
+	_serviceBrand: undefined;
 	private _experiments: IExperiment[] = [];
 	private _loadExperimentsPromise: Promise<void>;
 	private _curatedMapping = Object.create(null);
@@ -120,7 +119,6 @@ export class ExperimentService extends Disposable implements IExperimentService 
 		@IStorageService private readonly storageService: IStorageService,
 		@IExtensionManagementService private readonly extensionManagementService: IExtensionManagementService,
 		@ITextFileService private readonly textFileService: ITextFileService,
-		@IEnvironmentService private readonly environmentService: IEnvironmentService,
 		@ITelemetryService private readonly telemetryService: ITelemetryService,
 		@ILifecycleService private readonly lifecycleService: ILifecycleService,
 		@IRequestService private readonly requestService: IRequestService,
@@ -169,7 +167,7 @@ export class ExperimentService extends Disposable implements IExperimentService 
 		this.storageService.store(storageKey, JSON.stringify(experimentState), StorageScope.GLOBAL);
 	}
 
-	protected getExperiments(): Promise<IRawExperiment[]> {
+	protected getExperiments(): Promise<IRawExperiment[] | null> {
 		if (!this.productService.experimentsUrl || this.configurationService.getValue('workbench.enableExperiments') === false) {
 			return Promise.resolve([]);
 		}
@@ -333,7 +331,7 @@ export class ExperimentService extends Disposable implements IExperimentService 
 			return Promise.resolve(ExperimentState.NoRun);
 		}
 
-		if (this.environmentService.appQuality === 'stable' && condition.insidersOnly === true) {
+		if (this.productService.quality === 'stable' && condition.insidersOnly === true) {
 			return Promise.resolve(ExperimentState.NoRun);
 		}
 

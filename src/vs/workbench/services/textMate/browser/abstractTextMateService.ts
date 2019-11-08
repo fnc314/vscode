@@ -16,7 +16,6 @@ import { IState, ITokenizationSupport, LanguageId, TokenMetadata, TokenizationRe
 import { nullTokenize2 } from 'vs/editor/common/modes/nullMode';
 import { generateTokensCSSForColorMap } from 'vs/editor/common/modes/supports/tokenization';
 import { IModeService } from 'vs/editor/common/services/modeService';
-import { IFileService } from 'vs/platform/files/common/files';
 import { ILogService } from 'vs/platform/log/common/log';
 import { INotificationService, Severity } from 'vs/platform/notification/common/notification';
 import { IStorageService, StorageScope } from 'vs/platform/storage/common/storage';
@@ -29,9 +28,10 @@ import { Disposable, IDisposable, dispose } from 'vs/base/common/lifecycle';
 import { IConfigurationService } from 'vs/platform/configuration/common/configuration';
 import { IValidGrammarDefinition, IValidEmbeddedLanguagesMap, IValidTokenTypeMap } from 'vs/workbench/services/textMate/common/TMScopeRegistry';
 import { TMGrammarFactory } from 'vs/workbench/services/textMate/common/TMGrammarFactory';
+import { IExtensionResourceLoaderService } from 'vs/workbench/services/extensionResourceLoader/common/extensionResourceLoader';
 
 export abstract class AbstractTextMateService extends Disposable implements ITextMateService {
-	public _serviceBrand: any;
+	public _serviceBrand: undefined;
 
 	private readonly _onDidEncounterLanguage: Emitter<LanguageId> = this._register(new Emitter<LanguageId>());
 	public readonly onDidEncounterLanguage: Event<LanguageId> = this._onDidEncounterLanguage.event;
@@ -48,7 +48,7 @@ export abstract class AbstractTextMateService extends Disposable implements ITex
 	constructor(
 		@IModeService private readonly _modeService: IModeService,
 		@IWorkbenchThemeService private readonly _themeService: IWorkbenchThemeService,
-		@IFileService protected readonly _fileService: IFileService,
+		@IExtensionResourceLoaderService protected readonly _extensionResourceLoaderService: IExtensionResourceLoaderService,
 		@INotificationService private readonly _notificationService: INotificationService,
 		@ILogService private readonly _logService: ILogService,
 		@IConfigurationService private readonly _configurationService: IConfigurationService,
@@ -191,10 +191,7 @@ export abstract class AbstractTextMateService extends Disposable implements ITex
 		this._grammarFactory = new TMGrammarFactory({
 			logTrace: (msg: string) => this._logService.trace(msg),
 			logError: (msg: string, err: any) => this._logService.error(msg, err),
-			readFile: async (resource: URI) => {
-				const content = await this._fileService.readFile(resource);
-				return content.value.toString();
-			}
+			readFile: (resource: URI) => this._extensionResourceLoaderService.readExtensionResource(resource)
 		}, this._grammarDefinitions || [], vscodeTextmate, this._loadOnigLib());
 		this._onDidCreateGrammarFactory(this._grammarDefinitions || []);
 
@@ -203,36 +200,37 @@ export abstract class AbstractTextMateService extends Disposable implements ITex
 		return this._grammarFactory;
 	}
 
-	private async _registerDefinitionIfAvailable(modeId: string): Promise<void> {
+	private _registerDefinitionIfAvailable(modeId: string): void {
 		const languageIdentifier = this._modeService.getLanguageIdentifier(modeId);
 		if (!languageIdentifier) {
 			return;
 		}
-		const languageId = languageIdentifier.id;
-		try {
-			if (!this._canCreateGrammarFactory()) {
-				return;
-			}
-			const grammarFactory = await this._getOrCreateGrammarFactory();
-			if (grammarFactory.has(languageId)) {
-				const promise = grammarFactory.createGrammar(languageId).then((r) => {
-					const tokenization = new TMTokenization(r.grammar, r.initialState, r.containsEmbeddedLanguages);
-					tokenization.onDidEncounterLanguage((languageId) => {
-						if (!this._encounteredLanguages[languageId]) {
-							this._encounteredLanguages[languageId] = true;
-							this._onDidEncounterLanguage.fire(languageId);
-						}
-					});
-					return new TMTokenizationSupport(r.languageId, tokenization, this._notificationService, this._configurationService, this._storageService);
-				}, e => {
-					onUnexpectedError(e);
-					return null;
-				});
-				this._tokenizersRegistrations.push(TokenizationRegistry.registerPromise(modeId, promise));
-			}
-		} catch (err) {
-			onUnexpectedError(err);
+		if (!this._canCreateGrammarFactory()) {
+			return;
 		}
+		const languageId = languageIdentifier.id;
+
+		// Here we must register the promise ASAP (without yielding!)
+		this._tokenizersRegistrations.push(TokenizationRegistry.registerPromise(modeId, (async () => {
+			try {
+				const grammarFactory = await this._getOrCreateGrammarFactory();
+				if (!grammarFactory.has(languageId)) {
+					return null;
+				}
+				const r = await grammarFactory.createGrammar(languageId);
+				const tokenization = new TMTokenization(r.grammar, r.initialState, r.containsEmbeddedLanguages);
+				tokenization.onDidEncounterLanguage((languageId) => {
+					if (!this._encounteredLanguages[languageId]) {
+						this._encounteredLanguages[languageId] = true;
+						this._onDidEncounterLanguage.fire(languageId);
+					}
+				});
+				return new TMTokenizationSupport(r.languageId, tokenization, this._notificationService, this._configurationService, this._storageService);
+			} catch (err) {
+				onUnexpectedError(err);
+				return null;
+			}
+		})()));
 	}
 
 	private static _toColorMap(colorMap: string[]): Color[] {

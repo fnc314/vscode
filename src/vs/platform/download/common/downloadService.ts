@@ -12,7 +12,7 @@ import { Schemas } from 'vs/base/common/network';
 
 export class DownloadService implements IDownloadService {
 
-	_serviceBrand: any;
+	_serviceBrand: undefined;
 
 	constructor(
 		@IRequestService private readonly requestService: IRequestService,
@@ -30,7 +30,7 @@ export class DownloadService implements IDownloadService {
 			await this.fileService.writeFile(target, context.stream);
 		} else {
 			const message = await asText(context);
-			return Promise.reject(new Error(`Expected 200, got back ${context.res.statusCode} instead.\n\n${message}`));
+			throw new Error(`Expected 200, got back ${context.res.statusCode} instead.\n\n${message}`);
 		}
 	}
 }

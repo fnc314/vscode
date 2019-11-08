@@ -67,18 +67,18 @@ suite('ExtHostLanguageFeatureCommands', function () {
 			rpcProtocol = new TestRPCProtocol();
 			instantiationService.stub(ICommandService, {
 				_serviceBrand: undefined,
-				executeCommand(id: string, args: any): any {
+				executeCommand(id: string, ...args: any): any {
 					const command = CommandsRegistry.getCommands().get(id);
 					if (!command) {
 						return Promise.reject(new Error(id + ' NOT known'));
 					}
 					const { handler } = command;
-					return Promise.resolve(instantiationService.invokeFunction(handler, args));
+					return Promise.resolve(instantiationService.invokeFunction(handler, ...args));
 				}
 			});
 			instantiationService.stub(IMarkerService, new MarkerService());
 			instantiationService.stub(IModelService, <IModelService>{
-				_serviceBrand: IModelService,
+				_serviceBrand: undefined,
 				getModel(): any { return model; },
 				createModel() { throw new Error(); },
 				updateModel() { throw new Error(); },
@@ -412,11 +412,8 @@ suite('ExtHostLanguageFeatureCommands', function () {
 				assert.equal(values.length, 4);
 				let [first, second, third, fourth] = values;
 				assert.equal(first.label, 'item1');
-				assert.equal(first.textEdit!.newText, 'item1');
-				assert.equal(first.textEdit!.range.start.line, 0);
-				assert.equal(first.textEdit!.range.start.character, 0);
-				assert.equal(first.textEdit!.range.end.line, 0);
-				assert.equal(first.textEdit!.range.end.character, 4);
+				assert.equal(first.textEdit, undefined);// no text edit, default ranges
+				assert.ok(!types.Range.isRange(first.range));
 
 				assert.equal(second.label, 'item2');
 				assert.equal(second.textEdit!.newText, 'foo');
@@ -434,10 +431,13 @@ suite('ExtHostLanguageFeatureCommands', function () {
 
 				assert.equal(fourth.label, 'item4');
 				assert.equal(fourth.textEdit, undefined);
-				assert.equal(fourth.range!.start.line, 0);
-				assert.equal(fourth.range!.start.character, 1);
-				assert.equal(fourth.range!.end.line, 0);
-				assert.equal(fourth.range!.end.character, 4);
+
+				const range: any = fourth.range!;
+				assert.ok(types.Range.isRange(range));
+				assert.equal(range.start.line, 0);
+				assert.equal(range.start.character, 1);
+				assert.equal(range.end.line, 0);
+				assert.equal(range.end.character, 4);
 				assert.ok(fourth.insertText instanceof types.SnippetString);
 				assert.equal((<types.SnippetString>fourth.insertText).value, 'foo$0bar');
 			});
@@ -857,4 +857,45 @@ suite('ExtHostLanguageFeatureCommands', function () {
 		assert.ok(value[0].parent);
 	});
 
+	// --- call hierarcht
+
+	test('CallHierarchy, back and forth', async function () {
+
+		disposables.push(extHost.registerCallHierarchyProvider(nullExtensionDescription, defaultSelector, new class implements vscode.CallHierarchyProvider {
+
+			prepareCallHierarchy(document: vscode.TextDocument, position: vscode.Position, ): vscode.ProviderResult<vscode.CallHierarchyItem> {
+				return new types.CallHierarchyItem(types.SymbolKind.Constant, 'ROOT', 'ROOT', document.uri, new types.Range(0, 0, 0, 0), new types.Range(0, 0, 0, 0));
+			}
+
+			provideCallHierarchyIncomingCalls(item: vscode.CallHierarchyItem, token: vscode.CancellationToken): vscode.ProviderResult<vscode.CallHierarchyIncomingCall[]> {
+
+				return [new types.CallHierarchyIncomingCall(
+					new types.CallHierarchyItem(types.SymbolKind.Constant, 'INCOMING', 'INCOMING', item.uri, new types.Range(0, 0, 0, 0), new types.Range(0, 0, 0, 0)),
+					[new types.Range(0, 0, 0, 0)]
+				)];
+			}
+
+			provideCallHierarchyOutgoingCalls(item: vscode.CallHierarchyItem, token: vscode.CancellationToken): vscode.ProviderResult<vscode.CallHierarchyOutgoingCall[]> {
+				return [new types.CallHierarchyOutgoingCall(
+					new types.CallHierarchyItem(types.SymbolKind.Constant, 'OUTGOING', 'OUTGOING', item.uri, new types.Range(0, 0, 0, 0), new types.Range(0, 0, 0, 0)),
+					[new types.Range(0, 0, 0, 0)]
+				)];
+			}
+		}));
+
+		await rpcProtocol.sync();
+
+		const root = await commands.executeCommand<vscode.CallHierarchyItem>('vscode.prepareCallHierarchy', model.uri, new types.Position(0, 0));
+
+		assert.ok(root);
+		assert.equal(root.name, 'ROOT');
+
+		const incoming = await commands.executeCommand<vscode.CallHierarchyIncomingCall[]>('vscode.provideIncomingCalls', root);
+		assert.equal(incoming.length, 1);
+		assert.equal(incoming[0].from.name, 'INCOMING');
+
+		const outgoing = await commands.executeCommand<vscode.CallHierarchyOutgoingCall[]>('vscode.provideOutgoingCalls', root);
+		assert.equal(outgoing.length, 1);
+		assert.equal(outgoing[0].to.name, 'OUTGOING');
+	});
 });

@@ -13,8 +13,8 @@ import { PLAINTEXT_MODE_ID } from 'vs/editor/common/modes/modesRegistry';
 import { IWorkspaceContextService } from 'vs/platform/workspace/common/workspace';
 import { IConfigurationService } from 'vs/platform/configuration/common/configuration';
 import { IModelService } from 'vs/editor/common/services/modelService';
-import { IUntitledEditorService } from 'vs/workbench/services/untitled/common/untitledEditorService';
-import { IDecorationsService, IResourceDecorationChangeEvent, IDecorationData } from 'vs/workbench/services/decorations/browser/decorations';
+import { IUntitledTextEditorService } from 'vs/workbench/services/untitled/common/untitledTextEditorService';
+import { IDecorationsService, IResourceDecorationChangeEvent } from 'vs/workbench/services/decorations/browser/decorations';
 import { Schemas } from 'vs/base/common/network';
 import { FileKind, FILES_ASSOCIATIONS_CONFIG, IFileService } from 'vs/platform/files/common/files';
 import { ITextModel } from 'vs/editor/common/model';
@@ -22,7 +22,7 @@ import { IThemeService } from 'vs/platform/theme/common/themeService';
 import { Event, Emitter } from 'vs/base/common/event';
 import { ILabelService } from 'vs/platform/label/common/label';
 import { getIconClasses, detectModeId } from 'vs/editor/common/services/getIconClasses';
-import { Disposable, dispose, IDisposable } from 'vs/base/common/lifecycle';
+import { Disposable, dispose, IDisposable, DisposableStore } from 'vs/base/common/lifecycle';
 import { IInstantiationService } from 'vs/platform/instantiation/common/instantiation';
 import { withNullAsUndefined } from 'vs/base/common/types';
 
@@ -34,7 +34,7 @@ export interface IResourceLabelProps {
 
 export interface IResourceLabelOptions extends IIconLabelValueOptions {
 	fileKind?: FileKind;
-	fileDecorations?: { colors: boolean, badges: boolean, data?: IDecorationData };
+	fileDecorations?: { colors: boolean, badges: boolean };
 	descriptionVerbosity?: Verbosity;
 }
 
@@ -211,7 +211,7 @@ export class ResourceLabel extends ResourceLabels {
 
 	constructor(
 		container: HTMLElement,
-		options: IIconLabelCreationOptions,
+		options: IIconLabelCreationOptions | undefined,
 		@IInstantiationService instantiationService: IInstantiationService,
 		@IExtensionService extensionService: IExtensionService,
 		@IConfigurationService configurationService: IConfigurationService,
@@ -241,6 +241,8 @@ class ResourceLabelWidget extends IconLabel {
 	private _onDidRender = this._register(new Emitter<void>());
 	readonly onDidRender: Event<void> = this._onDidRender.event;
 
+	private readonly renderDisposables = this._register(new DisposableStore());
+
 	private label?: IResourceLabelProps;
 	private options?: IResourceLabelOptions;
 	private computedIconClasses?: string[];
@@ -252,12 +254,12 @@ class ResourceLabelWidget extends IconLabel {
 
 	constructor(
 		container: HTMLElement,
-		options: IIconLabelCreationOptions,
+		options: IIconLabelCreationOptions | undefined,
 		@IModeService private readonly modeService: IModeService,
 		@IModelService private readonly modelService: IModelService,
 		@IDecorationsService private readonly decorationsService: IDecorationsService,
 		@ILabelService private readonly labelService: ILabelService,
-		@IUntitledEditorService private readonly untitledEditorService: IUntitledEditorService,
+		@IUntitledTextEditorService private readonly untitledTextEditorService: IUntitledTextEditorService,
 		@IWorkspaceContextService private readonly contextService: IWorkspaceContextService
 	) {
 		super(container, options);
@@ -387,7 +389,7 @@ class ResourceLabelWidget extends IconLabel {
 		}
 
 		let description: string | undefined;
-		const hidePath = (options && options.hidePath) || (resource.scheme === Schemas.untitled && !this.untitledEditorService.hasAssociatedFilePath(resource));
+		const hidePath = (options && options.hidePath) || (resource.scheme === Schemas.untitled && !this.untitledTextEditorService.hasAssociatedFilePath(resource));
 		if (!hidePath) {
 			description = this.labelService.getUriLabel(resources.dirname(resource), { relative: true });
 		}
@@ -434,7 +436,9 @@ class ResourceLabelWidget extends IconLabel {
 			return;
 		}
 
-		const iconLabelOptions: IIconLabelValueOptions = {
+		this.renderDisposables.clear();
+
+		const iconLabelOptions: IIconLabelValueOptions & { extraClasses: string[] } = {
 			title: '',
 			italic: this.options && this.options.italic,
 			matches: this.options && this.options.matches,
@@ -462,27 +466,29 @@ class ResourceLabelWidget extends IconLabel {
 		}
 
 		if (this.options && this.options.extraClasses) {
-			iconLabelOptions.extraClasses!.push(...this.options.extraClasses);
+			iconLabelOptions.extraClasses.push(...this.options.extraClasses);
 		}
 
 		if (this.options && this.options.fileDecorations && resource) {
 			const deco = this.decorationsService.getDecoration(
 				resource,
-				this.options.fileKind !== FileKind.FILE,
-				this.options.fileDecorations.data
+				this.options.fileKind !== FileKind.FILE
 			);
 
 			if (deco) {
+
+				this.renderDisposables.add(deco);
+
 				if (deco.tooltip) {
 					iconLabelOptions.title = `${iconLabelOptions.title} • ${deco.tooltip}`;
 				}
 
 				if (this.options.fileDecorations.colors) {
-					iconLabelOptions.extraClasses!.push(deco.labelClassName);
+					iconLabelOptions.extraClasses.push(deco.labelClassName);
 				}
 
 				if (this.options.fileDecorations.badges) {
-					iconLabelOptions.extraClasses!.push(deco.badgeClassName);
+					iconLabelOptions.extraClasses.push(deco.badgeClassName);
 				}
 			}
 		}

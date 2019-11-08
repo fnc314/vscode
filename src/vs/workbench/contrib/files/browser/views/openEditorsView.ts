@@ -16,7 +16,7 @@ import { IEditorInput, Verbosity } from 'vs/workbench/common/editor';
 import { SaveAllAction, SaveAllInGroupAction, CloseGroupAction } from 'vs/workbench/contrib/files/browser/fileActions';
 import { OpenEditorsFocusedContext, ExplorerFocusedContext, IFilesConfiguration, OpenEditor } from 'vs/workbench/contrib/files/common/files';
 import { ITextFileService, AutoSaveMode } from 'vs/workbench/services/textfile/common/textfiles';
-import { IUntitledEditorService } from 'vs/workbench/services/untitled/common/untitledEditorService';
+import { IUntitledTextEditorService } from 'vs/workbench/services/untitled/common/untitledTextEditorService';
 import { CloseAllEditorsAction, CloseEditorAction } from 'vs/workbench/browser/parts/editor/editorActions';
 import { ToggleEditorLayoutAction } from 'vs/workbench/browser/actions/layoutActions';
 import { IContextKeyService, IContextKey } from 'vs/platform/contextkey/common/contextkey';
@@ -34,7 +34,7 @@ import { createAndFillInContextMenuActions } from 'vs/platform/actions/browser/m
 import { IMenuService, MenuId, IMenu } from 'vs/platform/actions/common/actions';
 import { DirtyEditorContext, OpenEditorsGroupContext } from 'vs/workbench/contrib/files/browser/fileCommands';
 import { ResourceContextKey } from 'vs/workbench/common/resources';
-import { ResourcesDropHandler, fillResourceDataTransfers, CodeDataTransfers } from 'vs/workbench/browser/dnd';
+import { ResourcesDropHandler, fillResourceDataTransfers, CodeDataTransfers, containsDragType } from 'vs/workbench/browser/dnd';
 import { ViewletPanel, IViewletPanelOptions } from 'vs/workbench/browser/parts/views/panelViewlet';
 import { IViewletViewOptions } from 'vs/workbench/browser/parts/views/viewsViewlet';
 import { IDragAndDropData, DataTransfers } from 'vs/base/browser/dnd';
@@ -42,6 +42,7 @@ import { memoize } from 'vs/base/common/decorators';
 import { ElementsDragAndDropData, DesktopDragAndDropData } from 'vs/base/browser/ui/list/listView';
 import { URI } from 'vs/base/common/uri';
 import { withNullAsUndefined, withUndefinedAsNull } from 'vs/base/common/types';
+import { isWeb } from 'vs/base/common/platform';
 
 const $ = dom.$;
 
@@ -49,7 +50,7 @@ export class OpenEditorsView extends ViewletPanel {
 
 	private static readonly DEFAULT_VISIBLE_OPEN_EDITORS = 9;
 	static readonly ID = 'workbench.explorer.openEditorsView';
-	static NAME = nls.localize({ key: 'openEditors', comment: ['Open is an adjective'] }, "Open Editors");
+	static readonly NAME = nls.localize({ key: 'openEditors', comment: ['Open is an adjective'] }, "Open Editors");
 
 	private dirtyCountElement!: HTMLElement;
 	private listRefreshScheduler: RunOnceScheduler;
@@ -71,7 +72,7 @@ export class OpenEditorsView extends ViewletPanel {
 		@IEditorGroupsService private readonly editorGroupService: IEditorGroupsService,
 		@IConfigurationService configurationService: IConfigurationService,
 		@IKeybindingService keybindingService: IKeybindingService,
-		@IUntitledEditorService private readonly untitledEditorService: IUntitledEditorService,
+		@IUntitledTextEditorService private readonly untitledTextEditorService: IUntitledTextEditorService,
 		@IContextKeyService private readonly contextKeyService: IContextKeyService,
 		@IThemeService private readonly themeService: IThemeService,
 		@ITelemetryService private readonly telemetryService: ITelemetryService,
@@ -99,7 +100,7 @@ export class OpenEditorsView extends ViewletPanel {
 		this._register(this.configurationService.onDidChangeConfiguration(e => this.onConfigurationChange(e)));
 
 		// Handle dirty counter
-		this._register(this.untitledEditorService.onDidChangeDirty(() => this.updateDirtyIndicator()));
+		this._register(this.untitledTextEditorService.onDidChangeDirty(() => this.updateDirtyIndicator()));
 		this._register(this.textFileService.models.onModelsDirty(() => this.updateDirtyIndicator()));
 		this._register(this.textFileService.models.onModelsSaved(() => this.updateDirtyIndicator()));
 		this._register(this.textFileService.models.onModelsSaveError(() => this.updateDirtyIndicator()));
@@ -185,15 +186,15 @@ export class OpenEditorsView extends ViewletPanel {
 		this.dirtyCountElement = dom.append(count, $('.monaco-count-badge'));
 
 		this._register((attachStylerCallback(this.themeService, { badgeBackground, badgeForeground, contrastBorder }, colors => {
-			const background = colors.badgeBackground ? colors.badgeBackground.toString() : null;
-			const foreground = colors.badgeForeground ? colors.badgeForeground.toString() : null;
-			const border = colors.contrastBorder ? colors.contrastBorder.toString() : null;
+			const background = colors.badgeBackground ? colors.badgeBackground.toString() : '';
+			const foreground = colors.badgeForeground ? colors.badgeForeground.toString() : '';
+			const border = colors.contrastBorder ? colors.contrastBorder.toString() : '';
 
 			this.dirtyCountElement.style.backgroundColor = background;
 			this.dirtyCountElement.style.color = foreground;
 
-			this.dirtyCountElement.style.borderWidth = border ? '1px' : null;
-			this.dirtyCountElement.style.borderStyle = border ? 'solid' : null;
+			this.dirtyCountElement.style.borderWidth = border ? '1px' : '';
+			this.dirtyCountElement.style.borderStyle = border ? 'solid' : '';
 			this.dirtyCountElement.style.borderColor = border;
 		})));
 
@@ -213,13 +214,13 @@ export class OpenEditorsView extends ViewletPanel {
 			this.listLabels.clear();
 		}
 		this.listLabels = this.instantiationService.createInstance(ResourceLabels, { onDidChangeVisibility: this.onDidChangeBodyVisibility });
-		this.list = this.instantiationService.createInstance(WorkbenchList, container, delegate, [
+		this.list = this.instantiationService.createInstance(WorkbenchList, 'OpenEditors', container, delegate, [
 			new EditorGroupRenderer(this.keybindingService, this.instantiationService),
 			new OpenEditorRenderer(this.listLabels, this.instantiationService, this.keybindingService, this.configurationService)
 		], {
-				identityProvider: { getId: (element: OpenEditor | IEditorGroup) => element instanceof OpenEditor ? element.getId() : element.id.toString() },
-				dnd: new OpenEditorsDragAndDrop(this.instantiationService, this.editorGroupService)
-			});
+			identityProvider: { getId: (element: OpenEditor | IEditorGroup) => element instanceof OpenEditor ? element.getId() : element.id.toString() },
+			dnd: new OpenEditorsDragAndDrop(this.instantiationService, this.editorGroupService)
+		});
 		this._register(this.list);
 		this._register(this.listLabels);
 
@@ -244,8 +245,9 @@ export class OpenEditorsView extends ViewletPanel {
 			this.dirtyEditorFocusedContext.reset();
 			const element = e.elements.length ? e.elements[0] : undefined;
 			if (element instanceof OpenEditor) {
-				this.dirtyEditorFocusedContext.set(this.textFileService.isDirty(withNullAsUndefined(element.getResource())));
-				this.resourceContext.set(withUndefinedAsNull(element.getResource()));
+				const resource = element.getResource();
+				this.dirtyEditorFocusedContext.set(this.textFileService.isDirty(resource));
+				this.resourceContext.set(withUndefinedAsNull(resource));
 			} else if (!!element) {
 				this.groupFocusedContext.set(true);
 			}
@@ -381,13 +383,16 @@ export class OpenEditorsView extends ViewletPanel {
 	private focusActiveEditor(): void {
 		if (this.list.length && this.editorGroupService.activeGroup) {
 			const index = this.getIndex(this.editorGroupService.activeGroup, this.editorGroupService.activeGroup.activeEditor);
-			this.list.setFocus([index]);
-			this.list.setSelection([index]);
-			this.list.reveal(index);
-		} else {
-			this.list.setFocus([]);
-			this.list.setSelection([]);
+			if (index >= 0) {
+				this.list.setFocus([index]);
+				this.list.setSelection([index]);
+				this.list.reveal(index);
+				return;
+			}
 		}
+
+		this.list.setFocus([]);
+		this.list.setSelection([]);
 	}
 
 	private onConfigurationChange(event: IConfigurationChangeEvent): void {
@@ -409,7 +414,7 @@ export class OpenEditorsView extends ViewletPanel {
 
 	private updateDirtyIndicator(): void {
 		let dirty = this.textFileService.getAutoSaveMode() !== AutoSaveMode.AFTER_SHORT_DELAY ? this.textFileService.getDirty().length
-			: this.untitledEditorService.getDirty().length;
+			: this.untitledTextEditorService.getDirty().length;
 		if (dirty === 0) {
 			dom.addClass(this.dirtyCountElement, 'hidden');
 		} else {
@@ -559,7 +564,6 @@ class OpenEditorRenderer implements IListRenderer<OpenEditor, IOpenEditorTemplat
 		editorTemplate.container = container;
 		editorTemplate.actionRunner = new OpenEditorActionRunner();
 		editorTemplate.actionBar = new ActionBar(container, { actionRunner: editorTemplate.actionRunner });
-		container.draggable = true;
 
 		const closeEditorAction = this.instantiationService.createInstance(CloseEditorAction, CloseEditorAction.ID, CloseEditorAction.LABEL);
 		const key = this.keybindingService.lookupKeybinding(closeEditorAction.id);
@@ -577,7 +581,8 @@ class OpenEditorRenderer implements IListRenderer<OpenEditor, IOpenEditorTemplat
 			italic: editor.isPreview(),
 			extraClasses: ['open-editor'],
 			fileDecorations: this.configurationService.getValue<IFilesConfiguration>().explorer.decorations,
-			descriptionVerbosity: Verbosity.MEDIUM
+			descriptionVerbosity: Verbosity.MEDIUM,
+			title: editor.editor.getTitle(Verbosity.LONG)
 		});
 	}
 
@@ -639,16 +644,12 @@ class OpenEditorsDragAndDrop implements IListDragAndDrop<OpenEditor | IEditorGro
 	}
 
 	onDragOver(data: IDragAndDropData, targetElement: OpenEditor | IEditorGroup, targetIndex: number, originalEvent: DragEvent): boolean | IListDragOverReaction {
-		if (data instanceof DesktopDragAndDropData && originalEvent.dataTransfer) {
-			const types = originalEvent.dataTransfer.types;
-			const typesArray: string[] = [];
-			for (let i = 0; i < types.length; i++) {
-				typesArray.push(types[i].toLowerCase()); // somehow the types are lowercase
+		if (data instanceof DesktopDragAndDropData) {
+			if (isWeb) {
+				return false; // dropping files into editor is unsupported on web
 			}
 
-			if (typesArray.indexOf(DataTransfers.FILES.toLowerCase()) === -1 && typesArray.indexOf(CodeDataTransfers.FILES.toLowerCase()) === -1) {
-				return false;
-			}
+			return containsDragType(originalEvent, DataTransfers.FILES, CodeDataTransfers.FILES);
 		}
 
 		return true;
